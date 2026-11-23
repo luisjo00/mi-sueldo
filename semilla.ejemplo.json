@@ -1,0 +1,6 @@
+{
+  "adminNombre": "Administrador",
+  "ninos": [
+    { "nombre": "Ejemplo", "sueldo": 40000, "frecuencia": "semanal", "ahorroSugerido": 10000, "ahorroInicial": 0 }
+  ]
+}
