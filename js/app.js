@@ -149,7 +149,9 @@
           <div class="fila">
             <button class="btn primario" data-a="pagar" data-id="${n.id}">Pagar</button>
             <button class="btn" data-a="ver-nino" data-id="${n.id}">Ver cuenta</button>
+            <button class="btn${conPin.includes(n.id) ? ' plano' : ' falta'}" data-a="pin" data-id="${n.id}">${conPin.includes(n.id) ? 'Cambiar PIN' : 'Crear su PIN'}</button>
           </div>
+          ${conPin.includes(n.id) ? '' : `<p class="suave">${esc(n.nombre)} no puede entrar hasta que le crees un PIN.</p>`}
         </section>`;
       }).join('')}
       ${c.interesActivo ? `
@@ -393,6 +395,22 @@
       </form>`);
   }
 
+  function modalPin(id) {
+    const n = L.buscarNino(state, id);
+    abrirModal(`
+      <h2>PIN de ${esc(n.nombre)}</h2>
+      <p class="suave">Con este PIN ${esc(n.nombre)} entra a ver su cuenta. Elígelo con ${esc(n.nombre)} y que no lo comparta.</p>
+      <form data-form="pin" data-id="${n.id}" class="formulario">
+        <label>PIN nuevo (4 a 6 números)
+          <input name="pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" required></label>
+        <label>Repite el PIN
+          <input name="pin2" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" required></label>
+        <p class="error" id="error-pin"></p>
+        <div class="fila fin"><button type="button" class="btn" data-a="cerrar">Cancelar</button>
+          <button class="btn primario">Guardar PIN</button></div>
+      </form>`);
+  }
+
   function modalComprobante(movId) {
     const m = state.movimientos.find((x) => x.id === movId);
     if (!m) return;
@@ -458,6 +476,7 @@
     pagar: (id) => { modalPagar(id); return false; },
     retiro: (id) => { modalMonto('retiro', id); return false; },
     abono: (id) => { modalMonto('abono', id); return false; },
+    pin: (id) => { modalPin(id); return false; },
     comprobante: (id) => { modalComprobante(id); return false; },
     cerrar: () => { cerrarModal(); return false; },
     confirmar: () => { const f = alConfirmar; cerrarModal(); if (f) f(); },
@@ -528,6 +547,17 @@
       const mov = L.registrarPago(state, n.id, { fecha: d.fecha, cumplidasIds, ahorro, nota: d.nota.trim() });
       guardar(); render(); modalComprobante(mov.id);
       return false;
+    },
+    pin: (d, form) => {
+      const error = (texto) => { document.getElementById('error-pin').textContent = texto; return false; };
+      if (!pinValido(d.pin)) return error('El PIN debe tener de 4 a 6 números.');
+      if (d.pin !== d.pin2) return error('Los dos PIN no coinciden.');
+      const id = form.dataset.id;
+      return S.ponerPin(id, d.pin).then((r) => {
+        if (!r.ok) return error('No se pudo guardar el PIN. Intenta de nuevo.');
+        if (!conPin.includes(id)) conPin.push(id);
+        cerrarModal(); aviso('PIN guardado');
+      }, () => error('No hay conexión. Intenta de nuevo.'));
     },
     retiro: (d, form) => movimientoMonto(L.registrarRetiro, d, form, 'Retiro registrado'),
     abono: (d, form) => movimientoMonto(L.registrarAbono, d, form, 'Abono registrado'),
