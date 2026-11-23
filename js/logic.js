@@ -136,6 +136,38 @@
     return r;
   }
 
+  // ---------- Datos para las gráficas ----------
+  // Ahorro acumulado al final de cada día con movimientos, del más antiguo al más reciente.
+  // Termina siempre en `fecha` (hoy), para que se vea hasta dónde llega.
+  function serieAhorro(state, ninoId, fecha) {
+    const f = fecha || hoy();
+    const movs = state.movimientos.filter((m) => m.ninoId === ninoId)
+      .slice().sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0));
+    const serie = [];
+    let saldo = 0;
+    for (const m of movs) {
+      saldo += efectoAhorro(m);
+      const ultimo = serie[serie.length - 1];
+      if (ultimo && ultimo.fecha === m.fecha) ultimo.saldo = saldo;
+      else serie.push({ fecha: m.fecha, saldo });
+    }
+    if (serie.length && serie[serie.length - 1].fecha < f) serie.push({ fecha: f, saldo });
+    return serie;
+  }
+
+  // Los tres bolsillos de lo ganado: dar (diezmo), ahorrar y gastar (lo recibido en mano).
+  // Devuelve el reparto de todos los pagos y el del último; null donde no hay pagos.
+  function bolsillos(state, ninoId) {
+    const pagos = state.movimientos.filter((m) => m.ninoId === ninoId && m.tipo === 'pago')
+      .slice().sort((a, b) => (a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : 0));
+    const reparto = (lista) => {
+      const t = { ganado: 0, dar: 0, ahorrar: 0, gastar: 0 };
+      for (const m of lista) { t.ganado += m.ganado; t.dar += m.diezmo; t.ahorrar += m.ahorro; t.gastar += m.libre; }
+      return t.ganado > 0 ? t : null;
+    };
+    return { total: reparto(pagos), ultimo: reparto(pagos.slice(-1)), pagos: pagos.length };
+  }
+
   // ---------- Operaciones (modifican el estado y devuelven el movimiento) ----------
   function registrarPago(state, ninoId, { fecha, cumplidasIds, ahorro, nota }) {
     const nino = buscarNino(state, ninoId);
@@ -279,7 +311,7 @@
   root.Logic = {
     DIEZMO, hoy, sumarDias, proximoSabado, uid, diasFrecuencia, estadoInicial, agregarNino, buscarNino,
     movimientosDe, calcularPago, hechasDe, accionNino, resumen, registrarPago, registrarRetiro, registrarAbono,
-    resolverRetiro, simularAhorro, semanasParaMeta,
+    resolverRetiro, simularAhorro, semanasParaMeta, serieAhorro, bolsillos,
     aplicarInteres, interesYaAplicado, eliminarMovimiento, dinero, fechaLarga, fechaCorta,
     nombreTipo, efectoAhorro, textoComprobante,
   };

@@ -264,6 +264,74 @@
       </form>`;
   }
 
+  // Gráfica de línea: cómo ha crecido el ahorro. Un solo dato por fecha; al pasar el dedo o el
+  // cursor se lee cada punto en la línea de texto de abajo.
+  function bloqueGrafica(n) {
+    const serie = L.serieAhorro(state, n.id);
+    if (serie.length < 2) return '<p class="suave">La gráfica aparece cuando haya movimientos en dos días distintos.</p>';
+    const W = 320, H = 170, izq = 10, der = 14, arriba = 26, abajo = 24;
+    const dia = (s) => Math.round(new Date(s + 'T00:00').getTime() / 86400000);
+    const d0 = dia(serie[0].fecha);
+    const dias = Math.max(1, dia(serie[serie.length - 1].fecha) - d0);
+    const maximo = Math.max(...serie.map((p) => p.saldo), 1);
+    const paso = Math.pow(10, Math.floor(Math.log10(maximo)));
+    const tope = Math.ceil(maximo / (paso / 2)) * (paso / 2); // techo "redondo" del eje
+    const x = (p) => izq + ((dia(p.fecha) - d0) / dias) * (W - izq - der);
+    const y = (v) => arriba + (1 - v / tope) * (H - arriba - abajo);
+    const pts = serie.map((p) => ({ x: +x(p).toFixed(1), y: +y(p.saldo).toFixed(1), t: `${L.fechaCorta(p.fecha)}: ${$(p.saldo)}` }));
+    const linea = pts.map((p) => `${p.x},${p.y}`).join(' ');
+    const base = y(0).toFixed(1);
+    const fin = pts[pts.length - 1];
+    const cambio = serie[serie.length - 1].saldo - serie[0].saldo;
+    return `
+      <svg class="grafica" viewBox="0 0 ${W} ${H}" role="img" data-grafica="${esc(JSON.stringify(pts))}"
+           aria-label="Ahorro de ${esc(n.nombre)}: de ${$(serie[0].saldo)} a ${$(serie[serie.length - 1].saldo)}">
+        ${[0, 0.5, 1].map((k) => `<line class="guia" x1="${izq}" x2="${W - der}" y1="${y(tope * k).toFixed(1)}" y2="${y(tope * k).toFixed(1)}"/>
+          ${k ? `<text class="eje" x="${izq}" y="${(y(tope * k) - 4).toFixed(1)}">${$(tope * k)}</text>` : ''}`).join('')}
+        <polygon class="area" points="${pts[0].x},${base} ${linea} ${fin.x},${base}"/>
+        <polyline class="trazo" points="${linea}"/>
+        <line class="cursor" x1="${fin.x}" x2="${fin.x}" y1="${arriba}" y2="${base}"/>
+        ${pts.map((p) => `<circle class="punto" cx="${p.x}" cy="${p.y}" r="4"/>`).join('')}
+        <circle class="punto activo" cx="${fin.x}" cy="${fin.y}" r="5.5"/>
+        <text class="eje" x="${izq}" y="${H - 6}">${esc(L.fechaCorta(serie[0].fecha))}</text>
+        <text class="eje" x="${W - der}" y="${H - 6}" text-anchor="end">${esc(L.fechaCorta(serie[serie.length - 1].fecha))}</text>
+      </svg>
+      <p class="lectura" data-lectura>${esc(fin.t)}</p>
+      <p class="suave">${cambio > 0 ? `Ha crecido ${$(cambio)} desde ${esc(L.fechaCorta(serie[0].fecha))}.`
+        : cambio < 0 ? `Ha bajado ${$(-cambio)} desde ${esc(L.fechaCorta(serie[0].fecha))}.` : 'Está igual que al comienzo.'} Toca la gráfica para ver cada fecha.</p>`;
+  }
+
+  // Los tres bolsillos: cómo se ha repartido lo ganado.
+  const BOLSILLOS = [['dar', 'Dar', 'diezmo'], ['ahorrar', 'Ahorrar', 'guardado'], ['gastar', 'Gastar', 'en mano']];
+  // Porcentajes enteros que suman 100 (lo que sobra del redondeo va al que más decimales tenía).
+  function porcentajes(t) {
+    const exactos = BOLSILLOS.map(([k]) => (t[k] / t.ganado) * 100);
+    const enteros = exactos.map(Math.floor);
+    const orden = exactos.map((v, i) => [v - enteros[i], i]).sort((a, b) => b[0] - a[0]);
+    for (let j = 0; j < 100 - enteros.reduce((a, b) => a + b, 0); j++) enteros[orden[j % orden.length][1]] += 1;
+    return Object.fromEntries(BOLSILLOS.map(([k], i) => [k, `${enteros[i]}%`]));
+  }
+  function barraBolsillos(t) {
+    const p = porcentajes(t);
+    return `<div class="barra-bolsillos" role="img" aria-label="${BOLSILLOS.map(([k, nombre]) => `${nombre} ${p[k]}`).join(', ')}">
+      ${BOLSILLOS.filter(([k]) => t[k] > 0).map(([k]) => `<i class="b-${k}" style="flex-grow:${t[k]}"></i>`).join('')}</div>`;
+  }
+  function bloqueBolsillos(n) {
+    const b = L.bolsillos(state, n.id);
+    if (!b.total) return '<p class="suave">Aquí se verá cómo se reparte cada pago entre dar, ahorrar y gastar.</p>';
+    const pct = (t, k) => porcentajes(t)[k];
+    return `
+      <p class="suave">De ${$(b.total.ganado)} ganados en ${b.pagos} ${b.pagos === 1 ? 'pago' : 'pagos'}:</p>
+      ${barraBolsillos(b.total)}
+      <ul class="lista bolsillos">${BOLSILLOS.map(([k, nombre, detalle]) => `
+        <li class="fila entre">
+          <span class="fila"><i class="muestra b-${k}"></i><span><strong>${nombre}</strong> <span class="suave">${detalle}</span></span></span>
+          <span class="derecha"><b>${pct(b.total, k)}</b> <span class="suave">${$(b.total[k])}</span></span>
+        </li>`).join('')}</ul>
+      ${b.pagos > 1 ? `<p class="suave">Último pago (${$(b.ultimo.ganado)}): dar ${pct(b.ultimo, 'dar')} · ahorrar ${pct(b.ultimo, 'ahorrar')} · gastar ${pct(b.ultimo, 'gastar')}</p>
+      ${barraBolsillos(b.ultimo)}` : ''}`;
+  }
+
   // El niño pide retirar parte de su ahorro; el administrador responde desde su inicio.
   function bloqueRetiro(n, r) {
     const s = n.retiroSolicitado;
@@ -380,7 +448,10 @@
     if (!n) { ui.pantalla = 'inicio'; return vistaInicio(); }
     const r = L.resumen(state, id);
     const tabs = [['movimientos', 'Movimientos'], ['tareas', 'Tareas'], ['metas', 'Metas'], ['datos', 'Datos']];
-    const contenido = { movimientos: bloqueMovimientos, tareas: (x) => bloqueTareas(x, true), metas: (x) => `${bloqueMetas(x, r, true)}<h2 class="aparte">Simulador de ahorro</h2>${bloqueSimulador(x, r)}`, datos: bloqueDatos };
+    const contenido = {
+      movimientos: (x) => `<h2>Cómo crece su ahorro</h2>${bloqueGrafica(x)}<h2 class="aparte">Sus tres bolsillos</h2>${bloqueBolsillos(x)}<h2 class="aparte">Movimientos</h2>${bloqueMovimientos(x, true)}`,
+      tareas: (x) => bloqueTareas(x, true), metas: (x) => `${bloqueMetas(x, r, true)}<h2 class="aparte">Simulador de ahorro</h2>${bloqueSimulador(x, r)}`, datos: bloqueDatos,
+    };
     return `
     <header class="barra">
       <div class="fila">${avatar(n)}<div><h1 class="marca chica">${esc(n.nombre)}</h1>
@@ -409,8 +480,10 @@
       <nav class="tabs">${tabs.map(([k, t]) => `<button class="${ui.tab === k ? 'activo' : ''}" data-a="tab" data-id="${k}">${t}</button>`).join('')}</nav>
       <section class="tarjeta">${contenido[ui.tab](n, true)}</section>`
       : `
+      <section class="tarjeta"><h2>Cómo crece mi ahorro</h2>${bloqueGrafica(n)}</section>
       <section class="tarjeta"><h2>Mis tareas</h2>${bloqueTareas(n, false)}</section>
       <section class="tarjeta"><h2>Mi próximo pago</h2>${bloqueProximoPago(n)}</section>
+      <section class="tarjeta"><h2>Mis tres bolsillos</h2>${bloqueBolsillos(n)}</section>
       <section class="tarjeta"><h2>Mis metas</h2>${bloqueMetas(n, r, false)}</section>
       <section class="tarjeta"><h2>Simulador de ahorro</h2>${bloqueSimulador(n, r)}</section>
       <section class="tarjeta"><h2>Retirar de mi ahorro</h2>${bloqueRetiro(n, r)}</section>
@@ -845,6 +918,24 @@
       });
     });
   });
+
+  // Gráfica: al pasar el cursor o tocar, se marca el punto más cercano y se lee abajo.
+  function leerGrafica(ev) {
+    const svg = ev.target.closest && ev.target.closest('svg[data-grafica]');
+    if (!svg) return;
+    const pts = JSON.parse(svg.dataset.grafica);
+    const caja = svg.getBoundingClientRect();
+    const px = ((ev.clientX - caja.left) / caja.width) * svg.viewBox.baseVal.width;
+    const p = pts.reduce((a, b) => (Math.abs(b.x - px) < Math.abs(a.x - px) ? b : a));
+    const cursor = svg.querySelector('.cursor');
+    const activo = svg.querySelector('.punto.activo');
+    cursor.setAttribute('x1', p.x); cursor.setAttribute('x2', p.x);
+    activo.setAttribute('cx', p.x); activo.setAttribute('cy', p.y);
+    const lectura = svg.parentElement.querySelector('[data-lectura]');
+    if (lectura) lectura.textContent = p.t;
+  }
+  $app.addEventListener('pointermove', leerGrafica);
+  $app.addEventListener('pointerdown', leerGrafica);
 
   // El simulador se recalcula al escribir, sin redibujar la pantalla (para no perder el cursor).
   $app.addEventListener('input', (ev) => {

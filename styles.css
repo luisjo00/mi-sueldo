@@ -139,3 +139,24 @@ fieldset .suave { margin-bottom: 4px; }
 .solicitud { background: #fff7e6; border: 1px solid #f2c57c; border-radius: 12px; padding: 12px; display: grid; gap: 8px; }
 h2.aparte { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--borde); }
 #simulador { display: grid; gap: 8px; }
+
+/* Gráfica del ahorro: una sola serie, con el color del niño */
+.grafica { display: block; width: 100%; height: auto; touch-action: pan-y; cursor: crosshair; }
+.grafica .guia { stroke: var(--borde); stroke-width: 1; }
+.grafica .eje { fill: var(--suave); font-size: 10px; font-variant-numeric: tabular-nums; }
+.grafica .area { fill: var(--color); opacity: 0.12; }
+.grafica .trazo { fill: none; stroke: var(--color); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.grafica .cursor { stroke: var(--suave); stroke-width: 1; stroke-dasharray: 3 3; }
+.grafica .punto { fill: var(--color); stroke: var(--tarjeta); stroke-width: 2; }
+.lectura { font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 4px; }
+
+/* Los tres bolsillos: barra delgada + lista con nombre, porcentaje y monto */
+.barra-bolsillos { display: flex; gap: 2px; height: 14px; margin: 8px 0; }
+.barra-bolsillos i { flex-basis: 0; min-width: 4px; border-radius: 4px; }
+.b-dar { background: #2a78d6; }
+.b-ahorrar { background: #eb6834; }
+.b-gastar { background: #1baf7a; }
+.muestra { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.bolsillos li { padding: 8px 0; }
+.bolsillos .fila { flex-wrap: nowrap; }
+.bolsillos .derecha { white-space: nowrap; }
