@@ -151,15 +151,61 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
--- Permisos: la app (rol anon) solo puede llamar a estas cinco funciones.
+-- Lo único que un niño puede cambiar, y solo en su propia cuenta: marcar una tarea como hecha o
+-- proponer cuánto ahorrar en su próximo pago. Devuelve su cuenta actualizada.
+--   p_accion: {"tipo":"tarea","tareaId":"...","hecha":true}  o  {"tipo":"ahorro","monto":15000}  (monto null = quitar)
+create or replace function public.ms_nino_accion(p_perfil text, p_pin text, p_accion jsonb) returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+declare
+  v text;
+  f public.ms_familia;
+  i int;
+  j int;
+  v_nino jsonb;
+  v_monto numeric;
+begin
+  if p_perfil = 'admin' then return jsonb_build_object('ok', false, 'error', 'pin'); end if;
+  v := public.ms_verificar(p_perfil, p_pin);
+  if v <> 'ok' then return jsonb_build_object('ok', false, 'error', v); end if;
+  select * into f from public.ms_familia where id = 1 for update;
+  select (ord - 1)::int, n into i, v_nino
+  from jsonb_array_elements(f.estado->'ninos') with ordinality as t(n, ord) where n->>'id' = p_perfil;
+  if i is null then return jsonb_build_object('ok', false, 'error', 'pin'); end if;
+
+  if p_accion->>'tipo' = 'tarea' then
+    select (ord - 1)::int into j
+    from jsonb_array_elements(v_nino->'tareas') with ordinality as t(x, ord) where x->>'id' = p_accion->>'tareaId';
+    if j is null or jsonb_typeof(p_accion->'hecha') is distinct from 'boolean' then
+      return jsonb_build_object('ok', false, 'error', 'datos');
+    end if;
+    f.estado := jsonb_set(f.estado, array['ninos', i::text, 'tareas', j::text, 'hecha'], p_accion->'hecha', true);
+  elsif p_accion->>'tipo' = 'ahorro' and jsonb_typeof(p_accion->'monto') = 'null' then
+    f.estado := jsonb_set(f.estado, array['ninos', i::text, 'ahorroPropuesto'], 'null'::jsonb, true);
+  elsif p_accion->>'tipo' = 'ahorro' and jsonb_typeof(p_accion->'monto') = 'number' then
+    v_monto := (p_accion->>'monto')::numeric;
+    if v_monto < 0 or v_monto <> trunc(v_monto) or v_monto > coalesce((v_nino->>'sueldo')::numeric, 0) then
+      return jsonb_build_object('ok', false, 'error', 'datos');
+    end if;
+    f.estado := jsonb_set(f.estado, array['ninos', i::text, 'ahorroPropuesto'], to_jsonb(v_monto), true);
+  else
+    return jsonb_build_object('ok', false, 'error', 'datos');
+  end if;
+
+  update public.ms_familia set estado = f.estado, version = version + 1, actualizado = now() where id = 1;
+  return public.ms_entrar(p_perfil, p_pin);
+end $$;
+
+-- Permisos: la app (rol anon) solo puede llamar a estas seis funciones.
 revoke all on function public.ms_verificar(text, text) from public, anon, authenticated;
 revoke all on function public.ms_perfiles() from public;
 revoke all on function public.ms_crear(text, jsonb) from public;
 revoke all on function public.ms_entrar(text, text) from public;
 revoke all on function public.ms_guardar(text, jsonb, int) from public;
 revoke all on function public.ms_poner_pin(text, text, text) from public;
+revoke all on function public.ms_nino_accion(text, text, jsonb) from public;
 grant execute on function public.ms_perfiles() to anon;
 grant execute on function public.ms_crear(text, jsonb) to anon;
 grant execute on function public.ms_entrar(text, text) to anon;
 grant execute on function public.ms_guardar(text, jsonb, int) to anon;
 grant execute on function public.ms_poner_pin(text, text, text) to anon;
+grant execute on function public.ms_nino_accion(text, text, jsonb) to anon;

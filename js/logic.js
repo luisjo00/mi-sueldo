@@ -75,12 +75,37 @@
     const ganado = total === 0 ? nino.sueldo : redondear((nino.sueldo * cumplidas) / total, 100);
     const diezmo = redondear(ganado * DIEZMO, 100);
     const maxAhorro = ganado - diezmo;
-    let ahorro = Number.isFinite(ahorroDeseado) ? ahorroDeseado : nino.ahorroSugerido;
+    // Sin monto explícito vale lo que el niño propuso y, si no propuso nada, lo sugerido.
+    let ahorro = Number.isFinite(ahorroDeseado) ? ahorroDeseado
+      : Number.isFinite(nino.ahorroPropuesto) ? nino.ahorroPropuesto : nino.ahorroSugerido;
     ahorro = Math.max(0, Math.min(Math.round(ahorro), maxAhorro));
     return {
       sueldoBase: nino.sueldo, tareasTotal: total, tareasCumplidas: cumplidas,
       ganado, diezmo, ahorro, maxAhorro, libre: ganado - diezmo - ahorro,
     };
+  }
+
+  // ---------- Lo que un niño puede cambiar de su propia cuenta ----------
+  const hechasDe = (nino) => nino.tareas.filter((t) => t.hecha).map((t) => t.id);
+
+  // accion: { tipo: 'tarea', tareaId, hecha } o { tipo: 'ahorro', monto } (monto null = quitar la propuesta).
+  // Devuelve false si la acción no es válida. La misma regla está en supabase/instalar.sql (ms_nino_accion).
+  function accionNino(estado, ninoId, accion) {
+    const nino = buscarNino(estado, ninoId);
+    if (!nino || !accion) return false;
+    if (accion.tipo === 'tarea') {
+      const t = nino.tareas.find((x) => x.id === accion.tareaId);
+      if (!t || typeof accion.hecha !== 'boolean') return false;
+      t.hecha = accion.hecha;
+      return true;
+    }
+    if (accion.tipo === 'ahorro') {
+      if (accion.monto === null) { nino.ahorroPropuesto = null; return true; }
+      if (!Number.isInteger(accion.monto) || accion.monto < 0 || accion.monto > nino.sueldo) return false;
+      nino.ahorroPropuesto = accion.monto;
+      return true;
+    }
+    return false;
   }
 
   // ---------- Totales por niño ----------
@@ -112,6 +137,9 @@
       tareas: nino.tareas.map((t) => ({ nombre: t.nombre, cumplida: (cumplidasIds || []).includes(t.id) })),
     };
     state.movimientos.push(mov);
+    // Empieza un periodo nuevo: tareas sin marcar y sin ahorro propuesto.
+    for (const t of nino.tareas) t.hecha = false;
+    nino.ahorroPropuesto = null;
     // El siguiente pago queda para la próxima fecha que todavía no ha pasado.
     let prox = nino.proximoPago || mov.fecha;
     while (prox <= mov.fecha) prox = sumarDias(prox, diasFrecuencia(nino));
@@ -200,7 +228,7 @@
 
   root.Logic = {
     DIEZMO, hoy, sumarDias, proximoSabado, uid, diasFrecuencia, estadoInicial, agregarNino, buscarNino,
-    movimientosDe, calcularPago, resumen, registrarPago, registrarRetiro, registrarAbono,
+    movimientosDe, calcularPago, hechasDe, accionNino, resumen, registrarPago, registrarRetiro, registrarAbono,
     aplicarInteres, interesYaAplicado, eliminarMovimiento, dinero, fechaLarga, fechaCorta,
     nombreTipo, efectoAhorro, textoComprobante,
   };

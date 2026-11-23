@@ -89,6 +89,13 @@
       escribirLocal(estado);
       return { ok: true };
     },
+    async accion(perfil, pin, accion) {
+      const { estado, pines } = leerLocal();
+      if (perfil === 'admin' || !estado || !pines[perfil] || pines[perfil] !== pin) return { ok: false, error: 'pin' };
+      if (!L.accionNino(estado, perfil, accion)) return { ok: false, error: 'datos' };
+      escribirLocal(estado);
+      return local.entrar(perfil, pin);
+    },
     async ponerPin(adminPin, perfil, nuevo) {
       const { estado, pines } = leerLocal();
       if (pines.admin !== adminPin) return { ok: false, error: 'pin' };
@@ -122,6 +129,11 @@
     },
     async guardar(pin, estado) {
       const r = await rpc('ms_guardar', { p_pin: pin, p_estado: estado, p_version: version });
+      if (r.ok) version = r.version;
+      return r;
+    },
+    async accion(perfil, pin, accion) {
+      const r = await rpc('ms_nino_accion', { p_perfil: perfil, p_pin: pin, p_accion: accion });
       if (r.ok) version = r.version;
       return r;
     },
@@ -169,6 +181,18 @@
         sacarPines(estado);
         const r = await fondo.guardar(credencial.pin, estado);
         if (!r.ok) throw new Error(r.error);
+      });
+      cola = paso.catch(() => {});
+      return paso;
+    },
+    // Un niño cambia algo de su propia cuenta (marcar una tarea, proponer su ahorro). En orden, como guardar.
+    // Devuelve su cuenta ya actualizada.
+    accion(accion) {
+      const paso = cola.then(async () => {
+        if (!credencial || credencial.perfil === 'admin') throw new Error('pin');
+        const r = await fondo.accion(credencial.perfil, credencial.pin, accion);
+        if (!r.ok) throw new Error(r.error);
+        return r;
       });
       cola = paso.catch(() => {});
       return paso;

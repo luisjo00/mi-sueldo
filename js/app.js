@@ -36,6 +36,29 @@
     conPin = r.conPin || [];
   }
 
+  // Un niño cambia algo de su cuenta. La pantalla ya muestra el cambio; al responder el servidor se
+  // toma su versión (solo cuando no quedan envíos en camino, para no pisar toques más recientes).
+  let enviosNino = 0;
+  function enviarAccionNino(accion) {
+    enviosNino += 1;
+    S.accion(accion).then((r) => {
+      enviosNino -= 1;
+      if (enviosNino === 0) { aplicarEntrada(r); if (!$modal.innerHTML) render(); }
+    }, () => {
+      enviosNino -= 1;
+      aviso('No se pudo guardar. Revisa tu conexión a internet.');
+      if (enviosNino === 0) arrancar();
+    });
+  }
+
+  // Botón "Instalar" (el navegador avisa cuando la app se puede instalar).
+  let instalar = null;
+  window.addEventListener('beforeinstallprompt', (ev) => {
+    ev.preventDefault();
+    instalar = ev;
+    if (!ui.cargando && !ui.sesion && !ui.perfil) render();
+  });
+
   // Carga la portada (quiénes pueden entrar) y retoma la sesión abierta, si la hay.
   function arrancar() {
     ui.cargando = true; ui.fallo = false;
@@ -94,6 +117,7 @@
           <span class="avatar grande admin">${esc(ui.portada.adminNombre.charAt(0))}</span><span>${esc(ui.portada.adminNombre)}</span>
         </button>
       </div>
+      ${instalar ? '<button class="btn" data-a="instalar">Instalar en este dispositivo</button>' : ''}
     </main>`;
   }
 
@@ -146,6 +170,10 @@
             <div class="derecha"><p class="suave">Ahorrado</p><p class="cifra media">${$(r.ahorrado)}</p></div>
           </div>
           <p class="proximo${vencido ? ' vencido' : ''}">${vencido ? 'Pago pendiente desde' : 'Próximo pago:'} ${esc(L.fechaCorta(n.proximoPago))}</p>
+          ${n.tareas.length || Number.isFinite(n.ahorroPropuesto) ? `<p class="suave">${[
+            n.tareas.length ? `Tareas hechas: ${L.hechasDe(n).length} de ${n.tareas.length}` : '',
+            Number.isFinite(n.ahorroPropuesto) ? `Propone ahorrar ${$(n.ahorroPropuesto)}` : '',
+          ].filter(Boolean).join(' · ')}</p>` : ''}
           <div class="fila">
             <button class="btn primario" data-a="pagar" data-id="${n.id}">Pagar</button>
             <button class="btn" data-a="ver-nino" data-id="${n.id}">Ver cuenta</button>
@@ -192,9 +220,11 @@
     const valor = n.tareas.length ? Math.round(n.sueldo / n.tareas.length / 100) * 100 : 0;
     return `
       ${n.tareas.length
-        ? `<p class="suave">Cada tarea vale ${$(valor)} del sueldo.</p>
+        ? `<p class="suave">${L.hechasDe(n).length} de ${n.tareas.length} hechas · cada tarea vale ${$(valor)} del sueldo. ${admin ? 'Tú también puedes marcarlas o desmarcarlas.' : 'Toca una tarea cuando la termines.'}</p>
            <ul class="lista">${n.tareas.map((t) => `
-             <li class="fila entre"><span>${esc(t.nombre)}</span>
+             <li class="fila entre">
+               <button class="tarea${t.hecha ? ' hecha' : ''}" data-a="marcar-tarea" data-id="${t.id}" aria-pressed="${t.hecha ? 'true' : 'false'}">
+                 <span class="caja">${t.hecha ? '✓' : ''}</span><span>${esc(t.nombre)}</span></button>
                ${admin ? `<button class="enlace peligro" data-a="borrar-tarea" data-id="${t.id}">Quitar</button>` : ''}</li>`).join('')}</ul>`
         : `<p class="suave">${admin ? 'Sin tareas: se paga el sueldo completo. Agrega tareas para pagar según lo cumplido.' : 'Todavía no hay tareas asignadas.'}</p>`}
       ${admin ? `
@@ -202,6 +232,28 @@
         <input name="nombre" placeholder="Nueva tarea (ej. tender la cama)" required>
         <button class="btn">Agregar</button>
       </form>` : ''}`;
+  }
+
+  // Lo que el niño va ganando esta semana y cuánto decide ahorrar.
+  function bloqueProximoPago(n) {
+    const c = L.calcularPago(n, L.hechasDe(n));
+    const tope = n.sueldo - Math.round((n.sueldo * L.DIEZMO) / 100) * 100;
+    const eligio = Number.isFinite(n.ahorroPropuesto);
+    return `
+      <p class="suave">${esc(L.fechaCorta(n.proximoPago))}. Así va tu pago con las tareas que llevas marcadas:</p>
+      <div class="calculo">
+        <div><span>Vas ganando${c.tareasTotal ? ` (${c.tareasCumplidas} de ${c.tareasTotal} tareas)` : ''}</span><b>${$(c.ganado)}</b></div>
+        <div><span>Diezmo (10%)</span><b>− ${$(c.diezmo)}</b></div>
+        <div><span>Ahorro</span><b>− ${$(c.ahorro)}</b></div>
+        <div class="final"><span>Te queda en mano</span><b>${$(c.libre)}</b></div>
+      </div>
+      <form data-form="ahorro" class="formulario">
+        <label>¿Cuánto quieres ahorrar en este pago?
+          <input name="monto" type="number" min="0" max="${tope}" step="100" inputmode="numeric" value="${eligio ? n.ahorroPropuesto : n.ahorroSugerido}" required></label>
+        <p class="suave">${eligio ? `Elegiste ahorrar ${$(n.ahorroPropuesto)}.` : 'Todavía no has elegido.'} ${esc(state.config.adminNombre)} te sugiere al menos ${$(n.ahorroSugerido)}; puedes ahorrar hasta ${$(tope)}.</p>
+        ${ui.error ? `<p class="error">${esc(ui.error)}</p>` : ''}
+        <button class="btn primario">Guardar mi ahorro</button>
+      </form>`;
   }
 
   function bloqueMovimientos(n, admin) {
@@ -278,8 +330,9 @@
       <nav class="tabs">${tabs.map(([k, t]) => `<button class="${ui.tab === k ? 'activo' : ''}" data-a="tab" data-id="${k}">${t}</button>`).join('')}</nav>
       <section class="tarjeta">${contenido[ui.tab](n, true)}</section>`
       : `
-      <section class="tarjeta"><h2>Mis metas</h2>${bloqueMetas(n, r, false)}</section>
       <section class="tarjeta"><h2>Mis tareas</h2>${bloqueTareas(n, false)}</section>
+      <section class="tarjeta"><h2>Mi próximo pago</h2>${bloqueProximoPago(n)}</section>
+      <section class="tarjeta"><h2>Mis metas</h2>${bloqueMetas(n, r, false)}</section>
       <section class="tarjeta"><h2>Mis movimientos</h2>${bloqueMovimientos(n, false)}</section>`}
     </main>`;
   }
@@ -338,16 +391,18 @@
 
   function modalPagar(id) {
     const n = L.buscarNino(state, id);
-    const c = L.calcularPago(n, n.tareas.map((t) => t.id));
+    const c = L.calcularPago(n, L.hechasDe(n));
     abrirModal(`
       <h2>Pagar a ${esc(n.nombre)}</h2>
       <form data-form="pagar" data-id="${n.id}" class="formulario">
         <label>Fecha<input name="fecha" type="date" value="${L.hoy()}" required></label>
         ${n.tareas.length ? `
         <fieldset><legend>Tareas cumplidas</legend>
-          ${n.tareas.map((t) => `<label class="casilla"><input type="checkbox" name="tarea" value="${t.id}" checked> ${esc(t.nombre)}</label>`).join('')}
+          <p class="suave">Vienen marcadas las que se marcaron durante la semana. Confirma o corrige.</p>
+          ${n.tareas.map((t) => `<label class="casilla"><input type="checkbox" name="tarea" value="${t.id}"${t.hecha ? ' checked' : ''}> ${esc(t.nombre)}</label>`).join('')}
+          <button type="button" class="enlace" data-a="marcar-todas">Marcar todas</button>
         </fieldset>` : ''}
-        <label>¿Cuánto decide ahorrar? (sugerido ${$(n.ahorroSugerido)})
+        <label>¿Cuánto decide ahorrar? (${Number.isFinite(n.ahorroPropuesto) ? `${esc(n.nombre)} propuso ${$(n.ahorroPropuesto)}; ` : ''}sugerido ${$(n.ahorroSugerido)})
           <input name="ahorro" type="number" min="0" step="100" inputmode="numeric" value="${c.ahorro}" required></label>
         <div class="calculo" id="calculo"></div>
         <label>Nota (opcional)<input name="nota" maxlength="120"></label>
@@ -477,6 +532,19 @@
     retiro: (id) => { modalMonto('retiro', id); return false; },
     abono: (id) => { modalMonto('abono', id); return false; },
     pin: (id) => { modalPin(id); return false; },
+    'marcar-tarea': (id) => {
+      const n = esAdmin() ? ninoActual() : state.ninos[0];
+      const t = n && n.tareas.find((x) => x.id === id);
+      if (!t) return false;
+      t.hecha = !t.hecha;
+      if (esAdmin()) guardar(); else enviarAccionNino({ tipo: 'tarea', tareaId: id, hecha: t.hecha });
+    },
+    'marcar-todas': () => {
+      $modal.querySelectorAll('input[name=tarea]').forEach((i) => { i.checked = true; });
+      recalcular();
+      return false;
+    },
+    instalar: () => { if (instalar) instalar.prompt(); instalar = null; },
     comprobante: (id) => { modalComprobante(id); return false; },
     cerrar: () => { cerrarModal(); return false; },
     confirmar: () => { const f = alConfirmar; cerrarModal(); if (f) f(); },
@@ -509,8 +577,8 @@
     },
   };
   // Lo que un niño puede tocar en su sesión; el resto es solo del administrador.
-  const PERMITIDO_NINO = ['salir', 'comprobante', 'cerrar', 'copiar'];
-  const SIN_SESION = ['perfil', 'volver-perfiles', 'reintentar'];
+  const PERMITIDO_NINO = ['salir', 'comprobante', 'cerrar', 'copiar', 'marcar-tarea'];
+  const SIN_SESION = ['perfil', 'volver-perfiles', 'reintentar', 'instalar'];
 
   document.addEventListener('click', (ev) => {
     const el = ev.target.closest('[data-a]');
@@ -547,6 +615,14 @@
       const mov = L.registrarPago(state, n.id, { fecha: d.fecha, cumplidasIds, ahorro, nota: d.nota.trim() });
       guardar(); render(); modalComprobante(mov.id);
       return false;
+    },
+    ahorro: (d) => {
+      const n = state.ninos[0];
+      const monto = Number(d.monto);
+      if (!Number.isInteger(monto) || monto < 0 || monto > n.sueldo) return 'Escribe un monto entre 0 y tu sueldo.';
+      n.ahorroPropuesto = monto;
+      enviarAccionNino({ tipo: 'ahorro', monto });
+      aviso('Ahorro guardado');
     },
     pin: (d, form) => {
       const error = (texto) => { document.getElementById('error-pin').textContent = texto; return false; };
@@ -599,6 +675,7 @@
     },
   };
   const FORMULARIOS_LIBRES = ['crear-pin', 'entrar'];
+  const FORMULARIOS_NINO = ['ahorro'];
 
   function movimientoMonto(operacion, d, form, mensaje) {
     try {
@@ -615,7 +692,9 @@
     if (!form) return;
     ev.preventDefault();
     const nombre = form.dataset.form;
-    if (!FORMULARIOS_LIBRES.includes(nombre) && !esAdmin()) return;
+    const deNino = Boolean(ui.sesion) && !esAdmin() && FORMULARIOS_NINO.includes(nombre);
+    if (!FORMULARIOS_LIBRES.includes(nombre) && !esAdmin() && !deNino) return;
+    if (esAdmin() && FORMULARIOS_NINO.includes(nombre)) return;
     const datos = Object.fromEntries(new FormData(form));
     const boton = form.querySelector('button:not([type=button])');
     if (boton) boton.disabled = true;
