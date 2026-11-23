@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Solo se carga código propio y solo se habla con la base de datos (la misma URL de js/config.js). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://yybouxkdgdhmzygahzhm.supabase.co; manifest-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#1f2a44">
   <title>Mi Sueldo</title>
   <link rel="manifest" href="manifest.webmanifest">

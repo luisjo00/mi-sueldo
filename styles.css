@@ -160,3 +160,5 @@ h2.aparte { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--bor
 .bolsillos li { padding: 8px 0; }
 .bolsillos .fila { flex-wrap: nowrap; }
 .bolsillos .derecha { white-space: nowrap; }
+
+.formulario.aparte, div.aparte { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--borde); display: grid; gap: 12px; }

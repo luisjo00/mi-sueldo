@@ -13,6 +13,9 @@
   const ui = {
     cargando: true, fallo: false, portada: null, sesion: null,
     pantalla: 'inicio', ninoId: null, tab: 'movimientos', perfil: null, error: '', sim: {},
+    debePin: false,     // el administrador entró con un PIN corto: solo puede cambiarlo
+    pinAnterior: '',    // ese PIN corto, en memoria, para poder cambiarlo
+    tieneCodigo: true,  // si ya existe el código de familia
   };
   let alConfirmar = null;
 
@@ -21,8 +24,8 @@
       if (e.message === 'version') {
         aviso('Los datos cambiaron desde otro dispositivo. Ya se actualizaron: repite tu último cambio.');
         arrancar();
-      } else if (e.message === 'pin' || e.message === 'bloqueado') {
-        aviso('Tu sesión ya no es válida. Vuelve a entrar.');
+      } else if (e.message === 'sesion') {
+        aviso('Tu sesión venció. Vuelve a entrar.');
         acciones.salir();
       } else {
         aviso('No se pudo guardar. Revisa tu conexión a internet.');
@@ -32,9 +35,26 @@
 
   function aplicarEntrada(r) {
     ui.sesion = { rol: r.rol, id: r.id };
-    state = r.estado;
+    ui.debePin = Boolean(r.debePin);
+    if (!ui.debePin) ui.pinAnterior = '';
+    state = r.estado || null;
     conPin = r.conPin || [];
+    if (r.rol === 'admin' && !r.debePin) ui.tieneCodigo = Boolean(r.tieneCodigo);
+    tocar();
   }
+
+  // El administrador sale solo tras 10 minutos sin tocar la app.
+  const MINUTOS_INACTIVO = 10;
+  let ultimoToque = Date.now();
+  function tocar() { ultimoToque = Date.now(); }
+  function revisarInactividad() {
+    if (ui.sesion && ui.sesion.rol === 'admin' && Date.now() - ultimoToque > MINUTOS_INACTIVO * 60000) {
+      acciones.salir();
+      aviso('Saliste por inactividad. Vuelve a entrar con tu PIN.');
+    }
+  }
+  ['pointerdown', 'keydown'].forEach((e) => document.addEventListener(e, tocar, true));
+  setInterval(revisarInactividad, 30000);
 
   // Un niño cambia algo de su cuenta. La pantalla ya muestra el cambio; al responder el servidor se
   // toma su versión (solo cuando no quedan envíos en camino, para no pisar toques más recientes).
@@ -44,8 +64,9 @@
     S.accion(accion).then((r) => {
       enviosNino -= 1;
       if (enviosNino === 0) { aplicarEntrada(r); if (!$modal.innerHTML) render(); }
-    }, () => {
+    }, (e) => {
       enviosNino -= 1;
+      if (e.message === 'sesion') { aviso('Tu sesión venció. Vuelve a entrar.'); acciones.salir(); return; }
       aviso('No se pudo guardar. Revisa tu conexión a internet.');
       if (enviosNino === 0) arrancar();
     });
@@ -64,7 +85,7 @@
     ui.cargando = true; ui.fallo = false;
     render();
     return S.perfiles()
-      .then((p) => { ui.portada = p; return p.configurada ? S.reanudar() : null; })
+      .then((p) => { ui.portada = p; return p.configurada && !p.requiereCodigo ? S.reanudar() : null; })
       .then((r) => { if (r && r.ok) aplicarEntrada(r); else { ui.sesion = null; state = null; } })
       .catch(() => { ui.fallo = true; })
       .then(() => { ui.cargando = false; render(); });
@@ -77,7 +98,10 @@
   const esAdmin = () => Boolean(ui.sesion && ui.sesion.rol === 'admin');
   const avatar = (n, grande) =>
     `<span class="avatar${grande ? ' grande' : ''}" style="background:${esc(n.color)}">${esc(n.nombre.charAt(0))}</span>`;
-  const pinValido = (p) => /^\d{4,6}$/.test(p);
+  const pinValido = (p) => /^\d{4,6}$/.test(p);        // PIN de un niño
+  const pinAdminValido = (p) => /^\d{6}$/.test(p);     // PIN del administrador
+  const codigoValido = (c) => /^[a-z0-9]{6,20}$/i.test(c);
+  const esperar = (r) => `Demasiados intentos. Espera ${r.minutos || 15} ${r.minutos === 1 ? 'minuto' : 'minutos'}.`;
   const nombreMes = (f) => new Date(f + 'T00:00').toLocaleDateString('es-CO', { month: 'long' });
 
   function aviso(texto) {
@@ -95,13 +119,63 @@
       <h1 class="marca">Mi Sueldo</h1>
       <p class="suave">Primero crea tu PIN de administrador. Con él entras tú; cada niño tendrá el suyo.</p>
       <form data-form="crear-pin" class="tarjeta formulario">
-        <label>PIN (4 a 6 números)
+        <label>PIN (6 números)
           <input name="pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" required></label>
         <label>Repite el PIN
           <input name="pin2" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" required></label>
         ${ui.error ? `<p class="error">${esc(ui.error)}</p>` : ''}
         <button class="btn primario">Crear PIN</button>
       </form>
+    </main>`;
+  }
+
+  // Dispositivo nuevo: pide el código de familia antes de mostrar a nadie.
+  function vistaCodigo() {
+    return `
+    <main class="centro">
+      <h1 class="marca">Mi Sueldo</h1>
+      <p class="suave">Este dispositivo es nuevo. Escribe el código de familia para continuar; solo se pide una vez.</p>
+      <form data-form="codigo" class="tarjeta formulario">
+        <label>Código de familia
+          <input name="codigo" maxlength="20" autocomplete="off" autocapitalize="none" spellcheck="false" autofocus required></label>
+        ${ui.error ? `<p class="error">${esc(ui.error)}</p>` : ''}
+        <button class="btn primario">Continuar</button>
+      </form>
+    </main>`;
+  }
+
+  // El administrador entró con un PIN de menos de 6 números: debe cambiarlo antes de seguir.
+  function vistaPinNuevo() {
+    return `
+    <main class="centro">
+      <h1 class="marca">PIN más seguro</h1>
+      <p class="suave">Tu PIN de administrador ahora debe tener 6 números. Elige uno nuevo para continuar.</p>
+      <form data-form="pin-nuevo" class="tarjeta formulario">
+        <label>PIN nuevo (6 números)
+          <input name="pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" autofocus required></label>
+        <label>Repite el PIN nuevo
+          <input name="pin2" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" required></label>
+        ${ui.error ? `<p class="error">${esc(ui.error)}</p>` : ''}
+        <button class="btn primario">Cambiar PIN</button>
+      </form>
+      <button class="btn plano" data-a="salir">Salir</button>
+    </main>`;
+  }
+
+  // El administrador define el código de familia (obligatorio la primera vez).
+  function vistaCrearCodigo() {
+    return `
+    <main class="centro">
+      <h1 class="marca">Código de familia</h1>
+      <p class="suave">Crea un código que solo conozca la familia. Cada celular o computador nuevo lo pedirá una vez; sin él nadie ve los nombres ni puede probar un PIN.</p>
+      <form data-form="crear-codigo" class="tarjeta formulario">
+        <label>Código (6 a 20 letras o números)
+          <input name="codigo" maxlength="20" autocomplete="off" autocapitalize="none" spellcheck="false" autofocus required></label>
+        ${ui.error ? `<p class="error">${esc(ui.error)}</p>` : ''}
+        <button class="btn primario">Guardar código</button>
+      </form>
+      <p class="suave">Anótalo: lo vas a compartir con los niños para sus celulares.</p>
+      <button class="btn plano" data-a="salir">Salir</button>
     </main>`;
   }
 
@@ -501,11 +575,33 @@
         <label>Tu nombre<input name="adminNombre" value="${esc(c.adminNombre)}" required></label>
         <label class="casilla"><input name="interesActivo" type="checkbox"${c.interesActivo ? ' checked' : ''}> Pagar interés mensual sobre el ahorro</label>
         <label>Interés mensual (%)<input name="interesMensual" type="number" min="0" max="20" step="0.5" value="${esc(c.interesMensual)}"></label>
-        <label>Cambiar tu PIN (déjalo vacío para no cambiarlo)
-          <input name="pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" placeholder="4 a 6 números"></label>
         ${ui.error ? `<p class="error">${esc(ui.error)}</p>` : ''}
         <button class="btn primario">Guardar</button>
       </form>
+      <section class="tarjeta formulario">
+        <h2>Seguridad</h2>
+        <form data-form="cambiar-pin" class="formulario">
+          <label>Tu PIN actual
+            <input name="actual" type="password" inputmode="numeric" maxlength="6" autocomplete="current-password" required></label>
+          <label>PIN nuevo (6 números)
+            <input name="pin" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" required></label>
+          <label>Repite el PIN nuevo
+            <input name="pin2" type="password" inputmode="numeric" maxlength="6" autocomplete="new-password" required></label>
+          <p class="error" id="error-cambiar-pin"></p>
+          <button class="btn">Cambiar mi PIN</button>
+        </form>
+        <form data-form="cambiar-codigo" class="formulario aparte">
+          <label>Código de familia nuevo (6 a 20 letras o números)
+            <input name="codigo" maxlength="20" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
+          <p class="suave">Al cambiarlo, los demás dispositivos tendrán que escribir el código nuevo y volver a entrar.</p>
+          <p class="error" id="error-cambiar-codigo"></p>
+          <button class="btn">Cambiar el código</button>
+        </form>
+        <div class="aparte">
+          <p class="suave">Si se perdió un celular o alguien entró donde no debía: cierra todas las demás sesiones y haz que cada dispositivo vuelva a pedir el código.</p>
+          <button class="btn peligro" data-a="cerrar-todo">Cerrar sesión en los demás dispositivos</button>
+        </div>
+      </section>
       <form data-form="nino" class="tarjeta formulario">
         <h2>Agregar niño</h2>
         <label>Nombre<input name="nombre" maxlength="40" required></label>
@@ -518,9 +614,7 @@
       </form>
       <section class="tarjeta">
         <h2>Respaldo</h2>
-        <p class="suave">${S.enNube
-          ? 'Los datos se guardan en la nube. Un respaldo de vez en cuando sirve como copia de seguridad.'
-          : 'Los datos se guardan solo en este dispositivo y navegador. Descarga un respaldo de vez en cuando.'}</p>
+        <p class="suave">Los datos se guardan en la nube, con una copia automática diaria. Un respaldo tuyo de vez en cuando sirve como segunda copia; guárdalo en un lugar privado.</p>
         <div class="fila">
           <button class="btn" data-a="respaldo">Descargar respaldo</button>
           <label class="btn">Restaurar respaldo<input type="file" accept="application/json,.json" data-restaurar hidden></label>
@@ -663,13 +757,17 @@
   // ---------- Dibujar ----------
   function render() {
     let html;
-    if (ui.cargando) html = '<main class="centro"><h1 class="marca">Mi Sueldo</h1><p class="suave">Cargando…</p></main>';
+    if (!S.configurada) html = '<main class="centro"><h1 class="marca">Mi Sueldo</h1><p class="suave">Falta configurar la conexión en js/config.js.</p></main>';
+    else if (ui.cargando) html = '<main class="centro"><h1 class="marca">Mi Sueldo</h1><p class="suave">Cargando…</p></main>';
     else if (ui.fallo) {
       html = `<main class="centro"><h1 class="marca">Mi Sueldo</h1>
         <p class="suave">No se pudo conectar. Revisa tu conexión a internet.</p>
         <button class="btn primario" data-a="reintentar">Reintentar</button></main>`;
     } else if (!ui.portada.configurada) html = vistaCrearPin();
+    else if (ui.portada.requiereCodigo) html = vistaCodigo();
     else if (!ui.sesion) html = ui.perfil ? vistaPin() : vistaPerfiles();
+    else if (ui.debePin) html = vistaPinNuevo();
+    else if (ui.sesion.rol === 'admin' && !ui.tieneCodigo) html = vistaCrearCodigo();
     else if (ui.sesion.rol === 'nino') html = vistaNino(ui.sesion.id, false);
     else if (ui.pantalla === 'nino') html = vistaNino(ui.ninoId, true);
     else if (ui.pantalla === 'ajustes') html = vistaAjustes();
@@ -687,10 +785,19 @@
     'volver-perfiles': () => { ui.perfil = null; },
     salir: () => {
       S.salir(); ui.sesion = null; state = null; ui.perfil = null; ui.pantalla = 'inicio'; ui.sim = {};
+      ui.debePin = false; ui.pinAnterior = '';
       cerrarModal(); arrancar();
       return false;
     },
     reintentar: () => { arrancar(); return false; },
+    'cerrar-todo': () => {
+      confirmar('¿Cerrar la sesión en todos los demás dispositivos? Tendrán que escribir el código de familia y su PIN otra vez.', 'Cerrar sesiones', () => {
+        S.cerrarTodo().then(
+          (r) => aviso(r.ok ? 'Listo: solo este dispositivo sigue dentro' : 'No se pudo. Vuelve a entrar e inténtalo.'),
+          () => aviso('No hay conexión. Intenta de nuevo.'));
+      });
+      return false;
+    },
     inicio: () => { ui.pantalla = 'inicio'; },
     ajustes: () => { ui.pantalla = 'ajustes'; },
     'ver-nino': (id) => { ui.pantalla = 'nino'; ui.ninoId = id; ui.tab = 'movimientos'; ui.sim = {}; },
@@ -773,8 +880,53 @@
 
   // ---------- Formularios ----------
   const formularios = {
+    codigo: (d) => S.conCodigo(d.codigo.trim()).then((r) => {
+      if (!r.ok) return r.error === 'bloqueado' ? esperar(r) : 'Ese no es el código de familia.';
+      arrancar();
+      return false;
+    }),
+    'pin-nuevo': (d) => {
+      if (!pinAdminValido(d.pin)) return 'El PIN debe tener exactamente 6 números.';
+      if (d.pin !== d.pin2) return 'Los dos PIN no coinciden.';
+      return S.ponerPin('admin', d.pin, ui.pinAnterior).then((r) => {
+        if (!r.ok) return r.error === 'bloqueado' ? esperar(r) : 'No se pudo cambiar. Sal y vuelve a entrar.';
+        return S.entrar('admin', d.pin).then((e) => {
+          if (!e.ok) { acciones.salir(); return false; }
+          aplicarEntrada(e); aviso('PIN cambiado');
+        });
+      });
+    },
+    'crear-codigo': (d) => {
+      if (!codigoValido(d.codigo.trim())) return 'Usa de 6 a 20 letras o números, sin espacios ni tildes.';
+      return S.ponerCodigo(d.codigo.trim()).then((r) => {
+        if (!r.ok) return r.error === 'sesion' ? 'Tu sesión venció. Sal y vuelve a entrar.' : 'No se pudo guardar el código.';
+        ui.tieneCodigo = true; aviso('Código de familia guardado');
+      });
+    },
+    'cambiar-codigo': (d, form) => {
+      const error = (texto) => { document.getElementById('error-cambiar-codigo').textContent = texto; return false; };
+      if (!codigoValido(d.codigo.trim())) return error('Usa de 6 a 20 letras o números, sin espacios ni tildes.');
+      return S.ponerCodigo(d.codigo.trim()).then((r) => {
+        if (!r.ok) return error('No se pudo cambiar. Vuelve a entrar e inténtalo.');
+        form.reset(); aviso('Código cambiado. Los demás dispositivos lo pedirán de nuevo.');
+        return false;
+      }, () => error('No hay conexión. Intenta de nuevo.'));
+    },
+    'cambiar-pin': (d) => {
+      const error = (texto) => { document.getElementById('error-cambiar-pin').textContent = texto; return false; };
+      if (!pinAdminValido(d.pin)) return error('El PIN nuevo debe tener exactamente 6 números.');
+      if (d.pin !== d.pin2) return error('Los dos PIN nuevos no coinciden.');
+      return S.ponerPin('admin', d.pin, d.actual).then((r) => {
+        if (!r.ok) return error(r.error === 'bloqueado' ? esperar(r) : r.error === 'pin' ? 'Tu PIN actual no es ese.' : 'No se pudo cambiar. Vuelve a entrar e inténtalo.');
+        // Cambiar el PIN cierra todas las sesiones del administrador: se entra de nuevo con el PIN nuevo.
+        return S.entrar('admin', d.pin).then((e) => {
+          if (!e.ok) { acciones.salir(); return false; }
+          aplicarEntrada(e); ui.pantalla = 'ajustes'; aviso('PIN cambiado');
+        });
+      }, () => error('No hay conexión. Intenta de nuevo.'));
+    },
     'crear-pin': (d) => {
-      if (!pinValido(d.pin)) return 'El PIN debe tener de 4 a 6 números.';
+      if (!pinAdminValido(d.pin)) return 'El PIN debe tener exactamente 6 números.';
       if (d.pin !== d.pin2) return 'Los dos PIN no coinciden.';
       return S.crear(d.pin).then((r) => {
         if (!r.ok) return r.error === 'existe' ? 'Esta app ya tiene administrador. Recarga la página.' : 'No se pudo crear el PIN.';
@@ -783,8 +935,10 @@
       });
     },
     entrar: (d) => S.entrar(ui.perfil, d.pin).then((r) => {
-      if (!r.ok) return r.error === 'bloqueado' ? 'Demasiados intentos. Espera 15 minutos.' : 'PIN incorrecto.';
+      if (r.error === 'dispositivo') { arrancar(); return false; } // este dispositivo dejó de ser de confianza
+      if (!r.ok) return r.error === 'bloqueado' ? esperar(r) : 'PIN incorrecto.';
       aplicarEntrada(r);
+      if (r.debePin) ui.pinAnterior = d.pin;
       ui.perfil = null;
     }),
     pagar: (d, form) => {
@@ -823,7 +977,7 @@
       if (d.pin !== d.pin2) return error('Los dos PIN no coinciden.');
       const id = form.dataset.id;
       return S.ponerPin(id, d.pin).then((r) => {
-        if (!r.ok) return error('No se pudo guardar el PIN. Intenta de nuevo.');
+        if (!r.ok) return error(r.error === 'sesion' ? 'Tu sesión venció. Sal y vuelve a entrar.' : 'No se pudo guardar el PIN. Intenta de nuevo.');
         if (!conPin.includes(id)) conPin.push(id);
         cerrarModal(); aviso('PIN guardado');
       }, () => error('No hay conexión. Intenta de nuevo.'));
@@ -854,20 +1008,14 @@
       });
     },
     ajustes: (d) => {
-      if (d.pin && !pinValido(d.pin)) return 'El PIN debe tener de 4 a 6 números.';
       const c = state.config;
       c.adminNombre = d.adminNombre.trim() || c.adminNombre;
       c.interesActivo = d.interesActivo === 'on';
       c.interesMensual = Number(d.interesMensual) || 0;
-      guardar();
-      if (!d.pin) { aviso('Ajustes guardados'); return; }
-      return S.ponerPin('admin', d.pin).then((r) => {
-        if (!r.ok) return 'Los ajustes se guardaron, pero no se pudo cambiar el PIN.';
-        aviso('Ajustes y PIN guardados');
-      });
+      guardar(); aviso('Ajustes guardados');
     },
   };
-  const FORMULARIOS_LIBRES = ['crear-pin', 'entrar'];
+  const FORMULARIOS_LIBRES = ['crear-pin', 'entrar', 'codigo'];
   const FORMULARIOS_NINO = ['ahorro', 'pedir-retiro'];
 
   function movimientoMonto(operacion, d, form, mensaje) {
@@ -888,6 +1036,7 @@
     const deNino = Boolean(ui.sesion) && !esAdmin() && FORMULARIOS_NINO.includes(nombre);
     if (!FORMULARIOS_LIBRES.includes(nombre) && !esAdmin() && !deNino) return;
     if (esAdmin() && FORMULARIOS_NINO.includes(nombre)) return;
+    if (!formularios[nombre]) return;
     const datos = Object.fromEntries(new FormData(form));
     const boton = form.querySelector('button:not([type=button])');
     if (boton) boton.disabled = true;
@@ -949,7 +1098,9 @@
 
   // Al volver a la app, un niño ve su cuenta al día.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible' || !ui.sesion || esAdmin() || $modal.innerHTML) return;
+    if (document.visibilityState !== 'visible') return;
+    revisarInactividad();
+    if (!ui.sesion || esAdmin() || $modal.innerHTML) return;
     S.reanudar().then((r) => { if (r && r.ok) { aplicarEntrada(r); render(); } }).catch(() => {});
   });
 
