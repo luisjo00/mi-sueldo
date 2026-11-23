@@ -88,7 +88,8 @@
   // ---------- Lo que un niño puede cambiar de su propia cuenta ----------
   const hechasDe = (nino) => nino.tareas.filter((t) => t.hecha).map((t) => t.id);
 
-  // accion: { tipo: 'tarea', tareaId, hecha } o { tipo: 'ahorro', monto } (monto null = quitar la propuesta).
+  // accion: { tipo: 'tarea', tareaId, hecha }, { tipo: 'ahorro', monto } (monto null = quitar la propuesta)
+  // o { tipo: 'retiro', monto, motivo } (monto null = cancelar la solicitud).
   // Devuelve false si la acción no es válida. La misma regla está en supabase/instalar.sql (ms_nino_accion).
   function accionNino(estado, ninoId, accion) {
     const nino = buscarNino(estado, ninoId);
@@ -103,6 +104,14 @@
       if (accion.monto === null) { nino.ahorroPropuesto = null; return true; }
       if (!Number.isInteger(accion.monto) || accion.monto < 0 || accion.monto > nino.sueldo) return false;
       nino.ahorroPropuesto = accion.monto;
+      return true;
+    }
+    if (accion.tipo === 'retiro') {
+      if (accion.monto === null) { nino.retiroSolicitado = null; return true; }
+      const motivo = accion.motivo == null ? '' : accion.motivo;
+      if (!Number.isInteger(accion.monto) || accion.monto <= 0 || accion.monto > resumen(estado, ninoId).ahorrado) return false;
+      if (typeof motivo !== 'string' || motivo.length > 120) return false;
+      nino.retiroSolicitado = { monto: accion.monto, motivo, fecha: hoy() };
       return true;
     }
     return false;
@@ -154,6 +163,47 @@
     const mov = { id: uid(), ninoId, fecha: fecha || hoy(), tipo: 'retiro', monto, nota: nota || '' };
     state.movimientos.push(mov);
     return mov;
+  }
+
+  // El administrador responde la solicitud de retiro de un niño. Si aprueba, queda el retiro registrado.
+  function resolverRetiro(state, ninoId, aprobar, nota) {
+    const nino = buscarNino(state, ninoId);
+    const s = nino && nino.retiroSolicitado;
+    if (!s) throw new Error('No hay una solicitud de retiro pendiente.');
+    if (aprobar) registrarRetiro(state, ninoId, { monto: s.monto, nota: s.motivo });
+    nino.retiroRespuesta = {
+      estado: aprobar ? 'aprobado' : 'rechazado', monto: s.monto, motivo: s.motivo, nota: nota || '', fecha: hoy(),
+    };
+    nino.retiroSolicitado = null;
+  }
+
+  // ---------- Simulador de ahorro (aproximado: interés una vez al mes sobre lo que haya) ----------
+  const SEMANAS_MES = 52 / 12;
+  function recorrerAhorro({ saldo, aporte, periodoSemanas, tasaMensual }, semanas, parar) {
+    const r = { total: saldo, aportado: 0, intereses: 0, pagos: 0, semanas: 0 };
+    let proximoInteres = SEMANAS_MES;
+    for (let w = 1; w <= semanas; w++) {
+      if (w % periodoSemanas === 0) { r.total += aporte; r.aportado += aporte; r.pagos += 1; }
+      if (w >= proximoInteres) {
+        const i = (r.total * tasaMensual) / 100;
+        r.total += i; r.intereses += i; proximoInteres += SEMANAS_MES;
+      }
+      r.semanas = w;
+      if (parar && parar(r)) return r;
+    }
+    return parar ? null : r;
+  }
+  // Cuánto habría después de `meses`.
+  function simularAhorro(datos, meses) {
+    const r = recorrerAhorro(datos, Math.round(meses * SEMANAS_MES));
+    const intereses = redondear(r.intereses, 100); // cifras redondas: es una estimación
+    return { total: datos.saldo + r.aportado + intereses, aportado: r.aportado, intereses, pagos: r.pagos };
+  }
+  // En cuántas semanas se llega a `precio` (0 si ya alcanza; null si no se llega en 10 años).
+  function semanasParaMeta(datos, precio) {
+    if (datos.saldo >= precio) return 0;
+    const r = recorrerAhorro(datos, 520, (x) => x.total >= precio);
+    return r ? r.semanas : null;
   }
 
   function registrarAbono(state, ninoId, { fecha, monto, nota }) {
@@ -229,6 +279,7 @@
   root.Logic = {
     DIEZMO, hoy, sumarDias, proximoSabado, uid, diasFrecuencia, estadoInicial, agregarNino, buscarNino,
     movimientosDe, calcularPago, hechasDe, accionNino, resumen, registrarPago, registrarRetiro, registrarAbono,
+    resolverRetiro, simularAhorro, semanasParaMeta,
     aplicarInteres, interesYaAplicado, eliminarMovimiento, dinero, fechaLarga, fechaCorta,
     nombreTipo, efectoAhorro, textoComprobante,
   };

@@ -151,9 +151,11 @@ begin
   return jsonb_build_object('ok', true);
 end $$;
 
--- Lo único que un niño puede cambiar, y solo en su propia cuenta: marcar una tarea como hecha o
--- proponer cuánto ahorrar en su próximo pago. Devuelve su cuenta actualizada.
---   p_accion: {"tipo":"tarea","tareaId":"...","hecha":true}  o  {"tipo":"ahorro","monto":15000}  (monto null = quitar)
+-- Lo único que un niño puede cambiar, y solo en su propia cuenta: marcar una tarea como hecha,
+-- proponer cuánto ahorrar en su próximo pago o pedir un retiro (que el administrador aprueba o rechaza).
+-- Devuelve su cuenta actualizada.
+--   p_accion: {"tipo":"tarea","tareaId":"...","hecha":true}  |  {"tipo":"ahorro","monto":15000}
+--             |  {"tipo":"retiro","monto":5000,"motivo":"..."}     (monto null = quitar o cancelar)
 create or replace function public.ms_nino_accion(p_perfil text, p_pin text, p_accion jsonb) returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 declare
@@ -163,6 +165,7 @@ declare
   j int;
   v_nino jsonb;
   v_monto numeric;
+  v_saldo numeric;
 begin
   if p_perfil = 'admin' then return jsonb_build_object('ok', false, 'error', 'pin'); end if;
   v := public.ms_verificar(p_perfil, p_pin);
@@ -187,6 +190,24 @@ begin
       return jsonb_build_object('ok', false, 'error', 'datos');
     end if;
     f.estado := jsonb_set(f.estado, array['ninos', i::text, 'ahorroPropuesto'], to_jsonb(v_monto), true);
+  elsif p_accion->>'tipo' = 'retiro' and jsonb_typeof(p_accion->'monto') = 'null' then
+    f.estado := jsonb_set(f.estado, array['ninos', i::text, 'retiroSolicitado'], 'null'::jsonb, true);
+  elsif p_accion->>'tipo' = 'retiro' and jsonb_typeof(p_accion->'monto') = 'number' then
+    v_monto := (p_accion->>'monto')::numeric;
+    -- Lo que tiene ahorrado: igual que resumen() en js/logic.js.
+    select coalesce(sum(case m->>'tipo'
+        when 'pago' then (m->>'ahorro')::numeric
+        when 'retiro' then -(m->>'monto')::numeric
+        else (m->>'monto')::numeric end), 0) into v_saldo
+    from jsonb_array_elements(f.estado->'movimientos') m where m->>'ninoId' = p_perfil;
+    if v_monto <= 0 or v_monto <> trunc(v_monto) or v_monto > v_saldo
+       or (p_accion ? 'motivo' and jsonb_typeof(p_accion->'motivo') not in ('string', 'null'))
+       or length(coalesce(p_accion->>'motivo', '')) > 120 then
+      return jsonb_build_object('ok', false, 'error', 'datos');
+    end if;
+    f.estado := jsonb_set(f.estado, array['ninos', i::text, 'retiroSolicitado'], jsonb_build_object(
+      'monto', v_monto, 'motivo', coalesce(p_accion->>'motivo', ''),
+      'fecha', to_char(now() at time zone 'America/Bogota', 'YYYY-MM-DD')), true);
   else
     return jsonb_build_object('ok', false, 'error', 'datos');
   end if;

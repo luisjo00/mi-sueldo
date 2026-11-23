@@ -12,7 +12,7 @@
   let conPin = [];    // ids de los niños que ya tienen PIN (solo lo sabe el administrador)
   const ui = {
     cargando: true, fallo: false, portada: null, sesion: null,
-    pantalla: 'inicio', ninoId: null, tab: 'movimientos', perfil: null, error: '',
+    pantalla: 'inicio', ninoId: null, tab: 'movimientos', perfil: null, error: '', sim: {},
   };
   let alConfirmar = null;
 
@@ -174,6 +174,14 @@
             n.tareas.length ? `Tareas hechas: ${L.hechasDe(n).length} de ${n.tareas.length}` : '',
             Number.isFinite(n.ahorroPropuesto) ? `Propone ahorrar ${$(n.ahorroPropuesto)}` : '',
           ].filter(Boolean).join(' · ')}</p>` : ''}
+          ${n.retiroSolicitado ? `
+          <div class="solicitud">
+            <p><strong>Pide retirar ${$(n.retiroSolicitado.monto)}</strong>${n.retiroSolicitado.motivo ? `: ${esc(n.retiroSolicitado.motivo)}` : ''}</p>
+            <div class="fila">
+              <button class="btn primario" data-a="aprobar-retiro" data-id="${n.id}">Aprobar</button>
+              <button class="btn" data-a="rechazar-retiro" data-id="${n.id}">Rechazar</button>
+            </div>
+          </div>` : ''}
           <div class="fila">
             <button class="btn primario" data-a="pagar" data-id="${n.id}">Pagar</button>
             <button class="btn" data-a="ver-nino" data-id="${n.id}">Ver cuenta</button>
@@ -256,6 +264,77 @@
       </form>`;
   }
 
+  // El niño pide retirar parte de su ahorro; el administrador responde desde su inicio.
+  function bloqueRetiro(n, r) {
+    const s = n.retiroSolicitado;
+    const u = n.retiroRespuesta;
+    const admin = esc(state.config.adminNombre);
+    const ultimo = u ? `<p class="suave">Tu última solicitud (${$(u.monto)}) fue <strong>${u.estado === 'aprobado' ? 'aprobada' : 'rechazada'}</strong>${u.nota ? `: ${esc(u.nota)}` : '.'}</p>` : '';
+    if (s) {
+      return `
+      <p>Pediste retirar <strong>${$(s.monto)}</strong>${s.motivo ? ` para: ${esc(s.motivo)}` : ''}.</p>
+      <p class="suave">Esperando la respuesta de ${admin}.</p>
+      <button class="btn" data-a="cancelar-retiro">Cancelar solicitud</button>`;
+    }
+    if (r.ahorrado <= 0) return `<p class="suave">Todavía no tienes ahorro para retirar.</p>${ultimo}`;
+    return `
+      ${ultimo}
+      <form data-form="pedir-retiro" class="formulario">
+        <label>¿Cuánto quieres retirar? (tienes ${$(r.ahorrado)})
+          <input name="monto" type="number" min="100" max="${r.ahorrado}" step="100" inputmode="numeric" required></label>
+        <label>¿Para qué lo quieres?
+          <input name="motivo" maxlength="120" required></label>
+        <button class="btn">Pedir retiro a ${admin}</button>
+      </form>`;
+  }
+
+  // Simulador: cuánto habría ahorrando lo mismo en cada pago. Solo calcula; no guarda nada.
+  function datosSimulador(n, r) {
+    const aporte = Number.isFinite(ui.sim.aporte) ? Math.max(0, ui.sim.aporte)
+      : Number.isFinite(n.ahorroPropuesto) ? n.ahorroPropuesto : n.ahorroSugerido;
+    const c = state.config;
+    return {
+      meses: ui.sim.meses || 3,
+      base: {
+        saldo: r.ahorrado, aporte, periodoSemanas: L.diasFrecuencia(n) / 7,
+        tasaMensual: c.interesActivo ? Number(c.interesMensual) || 0 : 0,
+      },
+    };
+  }
+  const duracion = (semanas) => (semanas < 9 ? `${semanas} ${semanas === 1 ? 'semana' : 'semanas'}`
+    : `unos ${Math.round(semanas / (52 / 12))} meses`);
+
+  function resultadoSimulador(n, r) {
+    const { meses, base } = datosSimulador(n, r);
+    const s = L.simularAhorro(base, meses);
+    const metas = n.metas.filter((m) => m.precio > r.ahorrado).map((m) => {
+      const w = L.semanasParaMeta(base, m.precio);
+      return `<p class="suave"><strong>${esc(m.nombre)}</strong> (${$(m.precio)}): ${w === null
+        ? 'con este ahorro no se alcanza en 10 años.' : `se alcanza en ${duracion(w)}.`}</p>`;
+    }).join('');
+    return `
+      <div class="calculo">
+        <div><span>Ahorro de hoy</span><b>${$(base.saldo)}</b></div>
+        <div><span>Ahorro nuevo (${s.pagos} ${s.pagos === 1 ? 'pago' : 'pagos'})</span><b>+ ${$(s.aportado)}</b></div>
+        ${base.tasaMensual ? `<div><span>Intereses (${base.tasaMensual}% al mes)</span><b>+ ${$(s.intereses)}</b></div>` : ''}
+        <div class="final"><span>En ${meses} ${meses === 1 ? 'mes' : 'meses'}</span><b>${$(s.total)}</b></div>
+      </div>
+      ${metas}
+      <p class="suave">Es un cálculo aproximado, sin contar retiros.</p>`;
+  }
+
+  function bloqueSimulador(n, r) {
+    const { meses, base } = datosSimulador(n, r);
+    return `
+      <div class="formulario">
+        <label>Si en cada pago se ahorra
+          <input data-sim="aporte" type="number" min="0" step="1000" inputmode="numeric" value="${base.aporte}"></label>
+        <label>durante
+          <select data-sim="meses">${[1, 3, 6, 12].map((m) => `<option value="${m}"${m === meses ? ' selected' : ''}>${m} ${m === 1 ? 'mes' : 'meses'}</option>`).join('')}</select></label>
+        <div id="simulador">${resultadoSimulador(n, r)}</div>
+      </div>`;
+  }
+
   function bloqueMovimientos(n, admin) {
     const movs = L.movimientosDe(state, n.id);
     if (!movs.length) return '<p class="suave">Todavía no hay movimientos.</p>';
@@ -301,7 +380,7 @@
     if (!n) { ui.pantalla = 'inicio'; return vistaInicio(); }
     const r = L.resumen(state, id);
     const tabs = [['movimientos', 'Movimientos'], ['tareas', 'Tareas'], ['metas', 'Metas'], ['datos', 'Datos']];
-    const contenido = { movimientos: bloqueMovimientos, tareas: (x) => bloqueTareas(x, true), metas: (x) => bloqueMetas(x, r, true), datos: bloqueDatos };
+    const contenido = { movimientos: bloqueMovimientos, tareas: (x) => bloqueTareas(x, true), metas: (x) => `${bloqueMetas(x, r, true)}<h2 class="aparte">Simulador de ahorro</h2>${bloqueSimulador(x, r)}`, datos: bloqueDatos };
     return `
     <header class="barra">
       <div class="fila">${avatar(n)}<div><h1 class="marca chica">${esc(n.nombre)}</h1>
@@ -333,6 +412,8 @@
       <section class="tarjeta"><h2>Mis tareas</h2>${bloqueTareas(n, false)}</section>
       <section class="tarjeta"><h2>Mi próximo pago</h2>${bloqueProximoPago(n)}</section>
       <section class="tarjeta"><h2>Mis metas</h2>${bloqueMetas(n, r, false)}</section>
+      <section class="tarjeta"><h2>Simulador de ahorro</h2>${bloqueSimulador(n, r)}</section>
+      <section class="tarjeta"><h2>Retirar de mi ahorro</h2>${bloqueRetiro(n, r)}</section>
       <section class="tarjeta"><h2>Mis movimientos</h2>${bloqueMovimientos(n, false)}</section>`}
     </main>`;
   }
@@ -466,6 +547,19 @@
       </form>`);
   }
 
+  function modalRechazar(id) {
+    const n = L.buscarNino(state, id);
+    if (!n.retiroSolicitado) return;
+    abrirModal(`
+      <h2>Rechazar el retiro de ${esc(n.nombre)}</h2>
+      <p class="suave">Pidió ${$(n.retiroSolicitado.monto)}${n.retiroSolicitado.motivo ? ` para: ${esc(n.retiroSolicitado.motivo)}` : ''}. ${esc(n.nombre)} verá tu respuesta en su cuenta.</p>
+      <form data-form="rechazar" data-id="${n.id}" class="formulario">
+        <label>¿Por qué? (opcional)<input name="nota" maxlength="120"></label>
+        <div class="fila fin"><button type="button" class="btn" data-a="cerrar">Cancelar</button>
+          <button class="btn peligro">Rechazar retiro</button></div>
+      </form>`);
+  }
+
   function modalComprobante(movId) {
     const m = state.movimientos.find((x) => x.id === movId);
     if (!m) return;
@@ -519,14 +613,14 @@
     perfil: (id) => { ui.perfil = id; },
     'volver-perfiles': () => { ui.perfil = null; },
     salir: () => {
-      S.salir(); ui.sesion = null; state = null; ui.perfil = null; ui.pantalla = 'inicio';
+      S.salir(); ui.sesion = null; state = null; ui.perfil = null; ui.pantalla = 'inicio'; ui.sim = {};
       cerrarModal(); arrancar();
       return false;
     },
     reintentar: () => { arrancar(); return false; },
     inicio: () => { ui.pantalla = 'inicio'; },
     ajustes: () => { ui.pantalla = 'ajustes'; },
-    'ver-nino': (id) => { ui.pantalla = 'nino'; ui.ninoId = id; ui.tab = 'movimientos'; },
+    'ver-nino': (id) => { ui.pantalla = 'nino'; ui.ninoId = id; ui.tab = 'movimientos'; ui.sim = {}; },
     tab: (id) => { ui.tab = id; },
     pagar: (id) => { modalPagar(id); return false; },
     retiro: (id) => { modalMonto('retiro', id); return false; },
@@ -538,6 +632,15 @@
       if (!t) return false;
       t.hecha = !t.hecha;
       if (esAdmin()) guardar(); else enviarAccionNino({ tipo: 'tarea', tareaId: id, hecha: t.hecha });
+    },
+    'aprobar-retiro': (id) => {
+      try { L.resolverRetiro(state, id, true); } catch (e) { aviso(e.message); return false; }
+      guardar(); aviso('Retiro aprobado y registrado');
+    },
+    'rechazar-retiro': (id) => { modalRechazar(id); return false; },
+    'cancelar-retiro': () => {
+      state.ninos[0].retiroSolicitado = null;
+      enviarAccionNino({ tipo: 'retiro', monto: null });
     },
     'marcar-todas': () => {
       $modal.querySelectorAll('input[name=tarea]').forEach((i) => { i.checked = true; });
@@ -577,7 +680,8 @@
     },
   };
   // Lo que un niño puede tocar en su sesión; el resto es solo del administrador.
-  const PERMITIDO_NINO = ['salir', 'comprobante', 'cerrar', 'copiar', 'marcar-tarea'];
+  const PERMITIDO_NINO = ['salir', 'comprobante', 'cerrar', 'copiar', 'marcar-tarea', 'cancelar-retiro'];
+  const SOLO_NINO = ['cancelar-retiro'];
   const SIN_SESION = ['perfil', 'volver-perfiles', 'reintentar', 'instalar'];
 
   document.addEventListener('click', (ev) => {
@@ -588,6 +692,7 @@
     if (!acciones[a]) return;
     if (!ui.sesion && !SIN_SESION.includes(a)) return;
     if (ui.sesion && !esAdmin() && !PERMITIDO_NINO.includes(a)) return;
+    if (esAdmin() && SOLO_NINO.includes(a)) return;
     if (acciones[a](el.dataset.id) !== false) render();
   });
 
@@ -615,6 +720,21 @@
       const mov = L.registrarPago(state, n.id, { fecha: d.fecha, cumplidasIds, ahorro, nota: d.nota.trim() });
       guardar(); render(); modalComprobante(mov.id);
       return false;
+    },
+    'pedir-retiro': (d) => {
+      const n = state.ninos[0];
+      const monto = Number(d.monto);
+      const motivo = d.motivo.trim();
+      if (!L.accionNino(state, n.id, { tipo: 'retiro', monto, motivo })) {
+        aviso('Revisa el monto: no puede ser mayor que tu ahorro.');
+        return false;
+      }
+      enviarAccionNino({ tipo: 'retiro', monto, motivo });
+      aviso('Solicitud enviada');
+    },
+    rechazar: (d, form) => {
+      try { L.resolverRetiro(state, form.dataset.id, false, d.nota.trim()); } catch (e) { aviso(e.message); }
+      guardar(); cerrarModal(); aviso('Retiro rechazado');
     },
     ahorro: (d) => {
       const n = state.ninos[0];
@@ -675,7 +795,7 @@
     },
   };
   const FORMULARIOS_LIBRES = ['crear-pin', 'entrar'];
-  const FORMULARIOS_NINO = ['ahorro'];
+  const FORMULARIOS_NINO = ['ahorro', 'pedir-retiro'];
 
   function movimientoMonto(operacion, d, form, mensaje) {
     try {
@@ -724,6 +844,16 @@
         state = datos; guardar(); render(); aviso('Respaldo restaurado (los PIN no cambian)');
       });
     });
+  });
+
+  // El simulador se recalcula al escribir, sin redibujar la pantalla (para no perder el cursor).
+  $app.addEventListener('input', (ev) => {
+    const campo = ev.target.dataset.sim;
+    if (!campo || !ui.sesion) return;
+    ui.sim[campo] = Number(ev.target.value);
+    const n = esAdmin() ? ninoActual() : state.ninos[0];
+    const destino = document.getElementById('simulador');
+    if (n && destino) destino.innerHTML = resultadoSimulador(n, L.resumen(state, n.id));
   });
 
   // Al volver a la app, un niño ve su cuenta al día.
